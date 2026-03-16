@@ -29,9 +29,19 @@ async def lifespan(app: FastAPI):
     else:
         print("⚡ Running without Redis (set REDIS_URL to enable)")
 
+    # Start Telegram bot polling
+    from app.services.telegram_service import start_bot_polling, is_telegram_configured
+    if is_telegram_configured():
+        start_bot_polling()
+        print("🤖 Telegram bot polling started")
+    else:
+        print("📱 Telegram bot not configured (set TELEGRAM_BOT_TOKEN to enable)")
+
     yield
 
     # Shutdown
+    from app.services.telegram_service import stop_bot_polling
+    await stop_bot_polling()
     from app.services.redis_service import close_redis
     await close_redis()
 

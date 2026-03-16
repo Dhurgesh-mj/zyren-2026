@@ -5,12 +5,13 @@ Setup:
   1. Create a bot via @BotFather on Telegram → get BOT_TOKEN
   2. Set TELEGRAM_BOT_TOKEN in .env
   3. Users link their Telegram by sending /start to the bot
-  4. The bot stores the chat_id → user mapping
+  4. The bot replies with their chat_id automatically
 
 Usage:
   await send_telegram_message(chat_id, "Your event reminder!")
 """
 
+import asyncio
 import logging
 import httpx
 from app.config import TELEGRAM_BOT_TOKEN
@@ -143,3 +144,102 @@ def format_attendance_message(event_title: str) -> str:
         f"📌 Check-in confirmed for <b>{event_title}</b>.\n"
         f"Welcome to the event! 🎯"
     )
+
+
+# ==================== BOT COMMAND HANDLER ====================
+
+_polling_task: asyncio.Task | None = None
+_last_update_id: int = 0
+
+
+async def _handle_bot_updates():
+    """Poll Telegram for incoming messages and respond to commands."""
+    global _last_update_id
+
+    if not TELEGRAM_BOT_TOKEN:
+        return
+
+    url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/getUpdates"
+    logger.info("🤖 Telegram bot polling started")
+
+    async with httpx.AsyncClient(timeout=30) as client:
+        while True:
+            try:
+                params = {"offset": _last_update_id + 1, "timeout": 10}
+                response = await client.get(url, params=params)
+
+                if response.status_code != 200:
+                    await asyncio.sleep(5)
+                    continue
+
+                data = response.json()
+                if not data.get("ok") or not data.get("result"):
+                    await asyncio.sleep(1)
+                    continue
+
+                for update in data["result"]:
+                    _last_update_id = update["update_id"]
+                    message = update.get("message")
+                    if not message or not message.get("text"):
+                        continue
+
+                    chat_id = message["chat"]["id"]
+                    text = message["text"].strip()
+                    first_name = message["from"].get("first_name", "there")
+
+                    if text in ("/start", "/chatid"):
+                        reply = (
+                            f"🛡️ <b>EventIQ Secure Bot</b>\n\n"
+                            f"Hi {first_name}! 👋\n\n"
+                            f"Your Chat ID is:\n"
+                            f"<code>{chat_id}</code>\n\n"
+                            f"📋 <b>How to link:</b>\n"
+                            f"1. Copy the Chat ID above\n"
+                            f"2. Go to your <b>EventIQ Profile</b> page\n"
+                            f"3. Paste it in the Telegram Chat ID field\n"
+                            f"4. Click Save & Send Test Message\n\n"
+                            f"✅ Once linked, you'll receive event confirmations, "
+                            f"QR tickets, and reminders here!"
+                        )
+                        await send_telegram_message(chat_id, reply)
+
+                    elif text == "/help":
+                        reply = (
+                            f"🛡️ <b>EventIQ Secure Bot — Commands</b>\n\n"
+                            f"/start — Get your Chat ID\n"
+                            f"/chatid — Get your Chat ID\n"
+                            f"/help — Show this help message\n\n"
+                            f"📱 Link your Chat ID in EventIQ to receive notifications."
+                        )
+                        await send_telegram_message(chat_id, reply)
+
+            except asyncio.CancelledError:
+                logger.info("🤖 Telegram bot polling stopped")
+                return
+            except Exception as e:
+                logger.error(f"Bot polling error: {e}")
+                await asyncio.sleep(5)
+
+
+def start_bot_polling():
+    """Start the bot polling background task."""
+    global _polling_task
+    if _polling_task and not _polling_task.done():
+        return
+    if not TELEGRAM_BOT_TOKEN:
+        logger.warning("Telegram bot token not set — bot polling disabled")
+        return
+    _polling_task = asyncio.create_task(_handle_bot_updates())
+    logger.info("🤖 Telegram bot polling task created")
+
+
+async def stop_bot_polling():
+    """Stop the bot polling background task."""
+    global _polling_task
+    if _polling_task and not _polling_task.done():
+        _polling_task.cancel()
+        try:
+            await _polling_task
+        except asyncio.CancelledError:
+            pass
+    _polling_task = None
